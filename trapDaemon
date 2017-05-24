@@ -1,0 +1,144 @@
+#!/usr/bin/perl
+# A simple trap handler
+use Net::SNMP;
+use DBI;
+use DBD::mysql;
+use Cwd 'abs_path';
+
+$cwd = abs_path(__FILE__);
+@find = split('/',$cwd);
+splice @find,-2;
+push (@find,'db.conf');
+$rpl=join('/',@find);
+require $rpl;
+
+#connecting to database 
+$dbh = DBI->connect("DBI:mysql:$database:$host:$port",$username,$password);
+
+#create if table not exist
+
+my $table= "CREATE TABLE IF NOT EXISTS Asgn33(
+name varchar(255),
+newtime int NOT NULL,
+newstatus int NOT NULL,
+oldtime int NOT NULL DEFAULT '0',
+oldstatus int NOT NULL DEFAULT '0',
+UNIQUE key(name)   ); " ;
+
+$sqltable=$dbh->prepare($table) or die "Can't create $table:$dbh->errstr\n";
+ $sqltable->execute() or die "can't execute create table: $sqltable->errstr";
+
+
+my $TRAP_FILE = "/var/www/html/asgn3/traps.log";
+open(TRAPFILE, ">> $TRAP_FILE");
+my $host = <STDIN>; # Read the Hostname - First line of input from STDIN\n ggggg\n
+chomp($host);
+my $ip = <STDIN>; # Read the IP - Second line of input
+chomp($ip);
+my $h = <STDIN>;
+chomp($h);
+my $a = <STDIN>;
+chomp($a);
+my $r = <STDIN>;
+chomp($r);
+@fn = split(" ",$r);
+print (TRAPFILE "@fn[1]\n");
+my $s = <STDIN>;
+chomp($s);
+@stat = split(" ",$s);
+print (TRAPFILE "@stat[1]\n");
+
+my $time = time();
+
+$dbh->do("insert into Asgn33 (name,newtime,newstatus,oldtime,oldstatus) values (@fn[1],$time,@stat[1],0,0) ON DUPLICATE KEY UPDATE oldtime = Asgn33.newtime, newtime = '$time', oldstatus = Asgn33.newstatus, newstatus = '@stat[1]' ") or die print (TRAPFILE "unable to connect2: $DBI::errstr") ;
+#@f_trap = qw();
+if (@stat[1]==3)
+{
+print (TRAPFILE "in loop 3");
+my $sh = $dbh->prepare ("SELECT * FROM Asgn33 where newstatus = '@stat[1]'") or die print(TRAPFILE "unable to select: $DBI::errstr");
+
+$sh->execute();
+
+my ($fn,$newtime,$newstatus,$oldtime,$oldstatus) = $sh->fetchrow_array();
+
+@f_trap = ( ".1.3.6.1.4.1.41717.20.1", OCTET_STRING,$fn,
+            ".1.3.6.1.4.1.41717.20.2", UNSIGNED32, $newtime,
+            ".1.3.6.1.4.1.41717.20.3", INTEGER, $oldstatus,
+            ".1.3.6.1.4.1.41717.20.4", UNSIGNED32, $oldtime);
+print (TRAPFILE "@f_trap");
+}
+
+elsif(@stat[1]==2)
+{
+
+my $sh = $dbh->prepare ("SELECT * FROM Asgn33 where newstatus = '@stat[1]'") or die print(TRAPFILE "unable to select: $DBI::errstr");
+$sh->execute();
+
+my $nrows = $sh->rows;
+my $i = 1;
+if ($nrows >= 2)
+{
+
+while(my ($fn,$newtime,$newstatus,$oldtime,$oldstatus) = $sh->fetchrow_array()){
+
+       push @f_trap, (".1.3.6.1.4.1.41717.30.".$i++, OCTET_STRING, $fn,
+                      ".1.3.6.1.4.1.41717.30.".$i++, UNSIGNED32, $newtime,
+                      ".1.3.6.1.4.1.41717.30.".$i++, INTEGER, $oldstatus,
+                      ".1.3.6.1.4.1.41717.30.".$i++, UNSIGNED32, $oldtime);
+
+}
+}
+}
+elsif (@stat[1]==1)
+{
+      print (TRAPFILE "f u");
+      print (TRAPFILE "array : @f_trap");
+$x=@f_trap;
+print (TRAPFILE "array : $x");
+}
+
+print (TRAPFILE "@f_trap");
+
+if(@f_trap)
+{
+print (TRAPFILE "if");
+my $sh2 = $dbh->prepare("SELECT IP, PORT, COMMUNITY FROM managerh_details");
+$sh2->execute() or print (TRAPFILE  $DBI::errstr);
+
+
+my @row = $sh2->fetchrow_array();
+print (TRAPFILE "while");
+         my ( $IP, $PORT, $COMMUNITY) = @row;
+         print (TRAPFILE "$IP");
+        
+         my ($session, $error)= Net::SNMP->session (
+         -hostname => $IP,
+         -community => $COMMUNITY,
+         -port => $PORT);
+        print (TRAPFILE "$session"); 
+         if (!defined $session)
+         {
+             print (TRAPFILE  "ERROR: Failed to create session for host '%s':%s.\n",$host,$error);
+             next;
+         }
+         
+
+
+#ex: Trap all values
+print (TRAPFILE "@f_trap");
+my $result = $session->trap(
+   -enterprise   => '1.3.6.1.4.1',
+   -agentaddr    => '127.0.0.1',
+   -generictrap  => 6,
+   -varbindlist  => \@f_trap,    
+);
+
+if (!defined($result)) {
+   print (TRAPFILE "ERROR: %s.\n", $session->error());
+} else {
+   print (TRAPFILE "Trap-PDU sent.\n");
+}
+}
+else
+{print(TRAPFILE "no vars to send trap.");}
+
